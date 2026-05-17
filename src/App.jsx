@@ -380,15 +380,45 @@ const parseBank = (text) => {
 
 const parseInternal = (text) => {
   return text.split('\n').map(line => line.trim()).filter(Boolean).map((line, i) => {
-    let parts = line.split('\t').map(p => p.trim()).filter(Boolean);
-    if (parts.length < 3) {
-      parts = line.split(/[;,]|\s{2,}/).map(p => p.trim()).filter(Boolean);
+    let parts;
+    // إذا فيه Tab → استخدمه فقط (يحافظ على الأوصاف الكبيرة كاملة)
+    if (line.includes('\t')) {
+      parts = line.split('\t').map(p => p.trim()).filter(Boolean);
+    } else {
+      // بدون Tab: نعتمد على المبلغ في النهاية كحد فاصل
+      // نبحث عن آخر رقم في السطر (هو المبلغ)
+      const match = line.match(/^(.+?)\s+(\S+?)\s+([\d,.\-]+(?:\.\d+)?)\s*$/);
+      if (match) {
+        // 3 أقسام: المرجع | الباقي كاسم/وصف | المبلغ
+        parts = [match[1].trim(), match[2].trim() + ' ' + (match[3] ? '' : '')].filter(Boolean);
+        // أعد البناء بشكل صحيح
+        const lastSpaceBeforeNum = line.lastIndexOf(' ', line.length - match[3].length - 1);
+        if (lastSpaceBeforeNum > 0) {
+          // كل اللي قبل المبلغ
+          const beforeAmount = line.substring(0, lastSpaceBeforeNum).trim();
+          const firstSpace = beforeAmount.indexOf(' ');
+          if (firstSpace > 0) {
+            const reference = beforeAmount.substring(0, firstSpace).trim();
+            const customer = beforeAmount.substring(firstSpace).trim();
+            parts = [reference, customer, match[3]];
+          } else {
+            parts = null;
+          }
+        } else {
+          parts = null;
+        }
+      } else {
+        // محاولة أخيرة: فصل بفاصلة أو فاصلة منقوطة
+        parts = line.split(/[;,]/).map(p => p.trim()).filter(Boolean);
+      }
     }
-    if (parts.length < 3) return null;
+
+    if (!parts || parts.length < 3) return null;
     const amount = parseFloat(parts[parts.length - 1].replace(/[^\d.\-]/g, ''));
     if (isNaN(amount)) return null;
     const reference = parts[0];
-    const customer = parts.slice(1, -1).join(' ');
+    // كل اللي بين المرجع والمبلغ = اسم/وصف العميل (كامل، بدون قص)
+    const customer = parts.slice(1, -1).join(' ').trim();
     if (!reference || !customer) return null;
     return { id: `i${i}-${Math.random().toString(36).slice(2, 7)}`, reference, customer, amount };
   }).filter(Boolean);
@@ -1291,10 +1321,43 @@ export default function App() {
 
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
-      arr = arr.filter(r =>
-        r.reference.toLowerCase().includes(q) ||
-        r.customers.some(c => c.customer.toLowerCase().includes(q))
-      );
+
+      // هل المستخدم يبحث برقم؟ (مبلغ)
+      const queryAsNumber = parseFloat(q.replace(/[^\d.\-]/g, ''));
+      const isNumericSearch = !isNaN(queryAsNumber) && /^[\d.,\-\s]+$/.test(q);
+
+      const matchesAmount = (amount) => {
+        if (!isNumericSearch) return false;
+        // مقارنة مرنة: يبحث 50 يطلع كل اللي فيهم 50 (50.00 / 1500 / 500 / 250)
+        const amtStr = amount.toFixed(2);
+        const amtStrNoDecimal = String(Math.round(amount));
+        return amtStr.includes(q) || amtStrNoDecimal.includes(q);
+      };
+
+      arr = arr.filter(r => {
+        // ١) المرجع
+        if (r.reference.toLowerCase().includes(q)) return true;
+
+        // ٢) التاريخ
+        if (r.bankDate && r.bankDate.toLowerCase().includes(q)) return true;
+
+        // ٣) وصف العملية البنكية (تفاصيل التحويل، اسم المحول، رقم الحساب، إلخ)
+        if (r.bankDescription && r.bankDescription.toLowerCase().includes(q)) return true;
+
+        // ٤) مبلغ البنك
+        if (matchesAmount(r.bankAmount)) return true;
+
+        // ٥) مبلغ السجل الإجمالي
+        if (matchesAmount(r.internalTotal)) return true;
+
+        // ٦) أسماء العملاء أو مبالغهم الفردية
+        if (r.customers.some(c =>
+          c.customer.toLowerCase().includes(q) ||
+          matchesAmount(c.amount)
+        )) return true;
+
+        return false;
+      });
     }
     return arr;
   }, [results, activeStatusFilter, searchQuery]);
@@ -1553,7 +1616,9 @@ export default function App() {
                       سجل العملاء على كل مرجع
                     </p>
                     <p className="font-body text-[11px] opacity-60" style={{ color: '#1c1917' }}>
-                      ✓ الصيغة: <span className="font-mono">مرجع ← اسم العميل ← مبلغ</span>
+                      ✓ الصيغة: <span className="font-mono">مرجع ← اسم/وصف ← مبلغ</span>
+                      <br />
+                      ✓ اسم العميل ممكن يكون قصير أو وصف طويل — يُقبل كاملاً
                       <br />
                       ✓ ممكن تكرّر المرجع مع أكثر من عميل
                     </p>
@@ -1706,7 +1771,7 @@ export default function App() {
                         type="text"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="ابحث في المراجع أو أسماء العملاء..."
+                        placeholder="ابحث في كل شي: مرجع · اسم · مبلغ · تاريخ · وصف العملية..."
                         className="input-field text-sm w-full pr-9"
                       />
                       {searchQuery && (
