@@ -440,6 +440,16 @@ const parseBulkCustomers = (text) => {
 };
 
 const reconcile = (bank, internal, manuallyResolvedRefs, resolvedCustomers) => {
+  // manuallyResolvedRefs is now an object: { ref: { note: '...' } } (or a Set for backward compat)
+  const isResolvedManually = (ref) => {
+    if (manuallyResolvedRefs instanceof Set) return manuallyResolvedRefs.has(ref);
+    return !!manuallyResolvedRefs[ref];
+  };
+  const getRefNote = (ref) => {
+    if (manuallyResolvedRefs instanceof Set) return '';
+    return manuallyResolvedRefs[ref]?.note || '';
+  };
+
   const bankByRef = {};
   bank.forEach(b => {
     if (!bankByRef[b.reference]) bankByRef[b.reference] = { total: 0, entries: [] };
@@ -476,8 +486,9 @@ const reconcile = (bank, internal, manuallyResolvedRefs, resolvedCustomers) => {
     else baseStatus = 'shortage';
 
     const isManualResolved =
-      (manuallyResolvedRefs.has(ref) || allCustomersResolved) && baseStatus !== 'matched';
+      (isResolvedManually(ref) || allCustomersResolved) && baseStatus !== 'matched';
     const displayStatus = isManualResolved ? 'matched' : baseStatus;
+    const manualNote = isResolvedManually(ref) ? getRefNote(ref) : '';
 
     return {
       reference: ref,
@@ -491,7 +502,8 @@ const reconcile = (bank, internal, manuallyResolvedRefs, resolvedCustomers) => {
       status: displayStatus,
       baseStatus,
       isManualResolved,
-      autoResolvedByCustomers: allCustomersResolved && !manuallyResolvedRefs.has(ref) && baseStatus !== 'matched'
+      manualNote,
+      autoResolvedByCustomers: allCustomersResolved && !isResolvedManually(ref) && baseStatus !== 'matched'
     };
   }).sort((a, b) => {
     const order = { shortage: 0, surplus: 1, only_bank: 2, only_internal: 3, matched: 4 };
@@ -1062,7 +1074,7 @@ export default function App() {
   const [correctDist, setCorrectDist] = useState({});
   const [activeStatusFilter, setActiveStatusFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [manuallyResolvedRefs, setManuallyResolvedRefs] = useState(new Set());
+  const [manuallyResolvedRefs, setManuallyResolvedRefs] = useState({});
   const [resolvedCustomers, setResolvedCustomers] = useState({});
   const [toast, setToast] = useState(null);
   const [modal, setModal] = useState(null);
@@ -1085,7 +1097,7 @@ export default function App() {
         setBankText(''); setInternalText('');
         setBankEntries([]); setInternalEntries([]);
         setHasRun(false); setExpandedRef(null);
-        setCorrectDist({}); setManuallyResolvedRefs(new Set());
+        setCorrectDist({}); setManuallyResolvedRefs({});
         setResolvedCustomers({}); setSearchQuery(''); setActiveStatusFilter('all');
         setActiveView('reconcile');
       }
@@ -1123,7 +1135,7 @@ export default function App() {
     if (!user || !currentReconciliationId || authLoading || isLoadingData) return;
     if (skipNextSaveRef.current) { skipNextSaveRef.current = false; return; }
     // Only save if there's actual content
-    if (!bankText && !internalText && Object.keys(resolvedCustomers).length === 0 && manuallyResolvedRefs.size === 0) return;
+    if (!bankText && !internalText && Object.keys(resolvedCustomers).length === 0 && Object.keys(manuallyResolvedRefs).length === 0) return;
 
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     setSyncStatus('syncing');
@@ -1135,7 +1147,7 @@ export default function App() {
           name: currentReconciliationName || 'بدون اسم',
           bankText,
           internalText,
-          manuallyResolvedRefs: Array.from(manuallyResolvedRefs),
+          manuallyResolvedRefs: manuallyResolvedRefs, // now an object { ref: { note } }
           resolvedCustomers,
           correctDist,
           hasRun,
@@ -1159,7 +1171,7 @@ export default function App() {
     setBankText(''); setInternalText('');
     setBankEntries([]); setInternalEntries([]);
     setHasRun(false); setExpandedRef(null);
-    setCorrectDist({}); setManuallyResolvedRefs(new Set());
+    setCorrectDist({}); setManuallyResolvedRefs({});
     setResolvedCustomers({}); setSearchQuery(''); setActiveStatusFilter('all');
     setActiveView('reconcile');
   };
@@ -1186,7 +1198,15 @@ export default function App() {
       setCurrentReconciliationName(item.name || 'بدون اسم');
       setBankText(item.bankText || '');
       setInternalText(item.internalText || '');
-      setManuallyResolvedRefs(new Set(item.manuallyResolvedRefs || []));
+      // Backward compat: old data was an array of refs, new data is { ref: { note } }
+      const resolvedData = item.manuallyResolvedRefs || {};
+      if (Array.isArray(resolvedData)) {
+        const asObj = {};
+        resolvedData.forEach(ref => { asObj[ref] = { note: '' }; });
+        setManuallyResolvedRefs(asObj);
+      } else {
+        setManuallyResolvedRefs(resolvedData);
+      }
       setResolvedCustomers(item.resolvedCustomers || {});
       setCorrectDist(item.correctDist || {});
 
@@ -1370,7 +1390,7 @@ export default function App() {
     setHasRun(true);
     setExpandedRef(null);
     setCorrectDist({});
-    setManuallyResolvedRefs(new Set());
+    setManuallyResolvedRefs({});
     setResolvedCustomers({});
     setTimeout(() => {
       resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1383,7 +1403,7 @@ export default function App() {
     setBankText(''); setInternalText('');
     setBankEntries([]); setInternalEntries([]);
     setHasRun(false); setExpandedRef(null);
-    setCorrectDist({}); setManuallyResolvedRefs(new Set());
+    setCorrectDist({}); setManuallyResolvedRefs({});
     setResolvedCustomers({});
     setSearchQuery(''); setActiveStatusFilter('all');
   };
@@ -1392,13 +1412,31 @@ export default function App() {
     setCorrectDist(prev => ({ ...prev, [ref]: newDist }));
   };
 
-  const toggleResolveRef = (ref) => {
+  const toggleResolveRef = (ref, note = '') => {
     setManuallyResolvedRefs(prev => {
-      const next = new Set(prev);
-      if (next.has(ref)) { next.delete(ref); showToast('تم إلغاء المطابقة اليدوية'); }
-      else { next.add(ref); showToast('✓ تمت المطابقة يدوياً'); }
+      const next = { ...prev };
+      if (next[ref]) {
+        delete next[ref];
+        showToast('تم إلغاء المطابقة اليدوية');
+      } else {
+        next[ref] = { note: note || '' };
+        showToast('✓ تمت المطابقة يدوياً');
+      }
       return next;
     });
+  };
+
+  const updateRefNote = (ref, note) => {
+    setManuallyResolvedRefs(prev => {
+      const next = { ...prev };
+      if (next[ref]) {
+        next[ref] = { ...next[ref], note };
+      } else {
+        next[ref] = { note };
+      }
+      return next;
+    });
+    showToast('✓ تم حفظ الملاحظة');
   };
 
   const resolveCustomer = (customer, action, note = '', ref = '') => {
@@ -1835,6 +1873,7 @@ export default function App() {
                       correctDist={correctDist[r.reference]}
                       setCorrectDist={(d) => updateCorrectDist(r.reference, d)}
                       onToggleResolve={() => toggleResolveRef(r.reference)}
+                      onUpdateRefNote={(note) => updateRefNote(r.reference, note)}
                       onScrollUp={() => scrollToRef(r.reference)}
                       onResolveCustomer={resolveCustomer}
                       onUnresolveCustomer={unresolveCustomer}
@@ -1920,6 +1959,26 @@ export default function App() {
             <div className="paper-card rounded-lg p-4">
               <div className="font-display text-xs tracking-widest opacity-50 mb-1">المبلغ</div>
               <div className="font-mono font-bold text-xl" style={{ color: '#0F3D2E' }}>{fmt(modal.data.amount)}</div>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {modal?.type === 'ref_note' && (
+        <Modal open={true} onClose={() => setModal(null)} title="ملاحظة المحاسب على المرجع" icon={MessageSquare} color="#b45309">
+          <div className="space-y-3">
+            <div className="paper-card rounded-lg p-4">
+              <div className="font-display text-xs tracking-widest opacity-50 mb-1">المرجع</div>
+              <div className="font-mono font-bold text-lg" style={{ color: '#0F3D2E' }} dir="ltr">{modal.data.reference}</div>
+            </div>
+            <div className="paper-card rounded-lg p-4">
+              <div className="font-display text-xs tracking-widest opacity-50 mb-2 flex items-center gap-1.5" style={{ color: '#b45309' }}>
+                <MessageSquare size={11} />
+                نص الملاحظة
+              </div>
+              <p className="font-body text-sm leading-relaxed p-3 rounded-md" style={{ background: 'rgba(254, 243, 199, 0.4)', color: '#1c1917', border: '1px solid rgba(180, 83, 9, 0.15)' }}>
+                {modal.data.note}
+              </p>
             </div>
           </div>
         </Modal>
@@ -2347,8 +2406,86 @@ const QueueView = ({ queueItems, queueStats, onUnresolve, onGoToRef, showToast }
   );
 };
 
+// ===================== REF NOTE EDITOR =====================
+const RefNoteEditor = ({ initialNote, onSave }) => {
+  const [isEditing, setIsEditing] = useState(false);
+  const [note, setNote] = useState(initialNote);
+
+  useEffect(() => { setNote(initialNote); }, [initialNote]);
+
+  const handleSave = () => {
+    onSave(note.trim());
+    setIsEditing(false);
+  };
+
+  const handleCancel = () => {
+    setNote(initialNote);
+    setIsEditing(false);
+  };
+
+  // Display mode
+  if (!isEditing) {
+    return (
+      <div className="mt-1">
+        {initialNote ? (
+          <div className="paper-card rounded-lg p-2.5 flex items-start gap-2">
+            <MessageSquare size={12} className="mt-0.5 flex-shrink-0" style={{ color: '#b45309' }} />
+            <div className="flex-1 min-w-0">
+              <div className="font-display text-[10px] tracking-widest opacity-60 mb-0.5" style={{ color: '#b45309' }}>
+                ملاحظة المحاسب
+              </div>
+              <p className="font-body text-xs leading-relaxed" style={{ color: '#1c1917' }}>
+                {initialNote}
+              </p>
+            </div>
+            <button onClick={() => setIsEditing(true)} className="icon-btn flex-shrink-0" title="تعديل">
+              <Pencil size={11} />
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setIsEditing(true)}
+            className="btn-secondary font-body font-bold text-[11px] rounded-md px-2.5 py-1 flex items-center gap-1.5 opacity-70 hover:opacity-100"
+            style={{ borderColor: 'rgba(180, 83, 9, 0.3)', color: '#b45309' }}
+          >
+            <Plus size={11} />
+            إضافة ملاحظة (سبب المطابقة)
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  // Edit mode
+  return (
+    <div className="mt-1 paper-card rounded-lg p-2.5">
+      <div className="font-display text-[10px] tracking-widest opacity-60 mb-1.5 flex items-center gap-1.5" style={{ color: '#b45309' }}>
+        <MessageSquare size={11} />
+        ملاحظة على المرجع (سبب المطابقة)
+      </div>
+      <textarea
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder="مثال: لم يتسجل لأنه دائن بالخطأ، رجعناه له بتاريخ 25/04..."
+        className="input-field text-xs w-full h-16 resize-none mb-2"
+        autoFocus
+      />
+      <div className="flex items-center gap-1.5">
+        <button onClick={handleSave} className="btn-primary font-body font-bold text-[11px] rounded-md px-2.5 py-1 flex items-center gap-1">
+          <Check size={11} strokeWidth={3} />
+          حفظ
+        </button>
+        <button onClick={handleCancel} className="btn-secondary font-body font-bold text-[11px] rounded-md px-2.5 py-1 flex items-center gap-1">
+          <X size={11} />
+          إلغاء
+        </button>
+      </div>
+    </div>
+  );
+};
+
 // ===================== REFERENCE ROW =====================
-const ReferenceRow = ({ r, rowRef, isOpen, onToggle, onClose, correctDist, setCorrectDist, onToggleResolve, onScrollUp, onResolveCustomer, onUnresolveCustomer, onShowModal, delay, showToast }) => {
+const ReferenceRow = ({ r, rowRef, isOpen, onToggle, onClose, correctDist, setCorrectDist, onToggleResolve, onUpdateRefNote, onScrollUp, onResolveCustomer, onUnresolveCustomer, onShowModal, delay, showToast }) => {
   const meta = STATUS_META[r.status];
   const isIssue = r.status !== 'matched';
   const isManualResolved = r.isManualResolved;
@@ -2395,6 +2532,17 @@ const ReferenceRow = ({ r, rowRef, isOpen, onToggle, onClose, correctDist, setCo
                   title="عرض تفاصيل العملية"
                 >
                   <Info size={11} />
+                </button>
+              )}
+              {/* Note indicator (clickable to expand and view note) */}
+              {r.manualNote && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onShowModal('ref_note', { reference: r.reference, note: r.manualNote }); }}
+                  className="icon-btn"
+                  style={{ color: '#b45309' }}
+                  title="عرض ملاحظة المحاسب"
+                >
+                  <MessageSquare size={11} />
                 </button>
               )}
             </div>
@@ -2447,20 +2595,30 @@ const ReferenceRow = ({ r, rowRef, isOpen, onToggle, onClose, correctDist, setCo
       {isOpen && (
         <div className="border-t" style={{ borderColor: 'rgba(15, 61, 46, 0.1)' }}>
           {isManualResolved && (
-            <div className="px-4 sm:px-5 py-3 flex items-center justify-between gap-2 flex-wrap" style={{ background: 'rgba(254, 243, 199, 0.4)', borderBottom: '1px solid rgba(180, 83, 9, 0.2)' }}>
-              <div className="flex items-center gap-2">
-                <Stamp size={14} style={{ color: '#b45309' }} />
-                <span className="font-display text-xs font-bold" style={{ color: '#b45309' }}>
-                  {wasAutoResolved
-                    ? 'تمت المطابقة تلقائياً — كل العملاء عُولجوا'
-                    : `مرجع تم تأشيره كـ "تمت المطابقة يدوياً" — أصلاً فيه فرق ${fmtSigned(r.diff)}`}
-                </span>
+            <div className="px-4 sm:px-5 py-3" style={{ background: 'rgba(254, 243, 199, 0.4)', borderBottom: '1px solid rgba(180, 83, 9, 0.2)' }}>
+              <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+                <div className="flex items-center gap-2">
+                  <Stamp size={14} style={{ color: '#b45309' }} />
+                  <span className="font-display text-xs font-bold" style={{ color: '#b45309' }}>
+                    {wasAutoResolved
+                      ? 'تمت المطابقة تلقائياً — كل العملاء عُولجوا'
+                      : `مرجع تم تأشيره كـ "تمت المطابقة يدوياً" — أصلاً فيه فرق ${fmtSigned(r.diff)}`}
+                  </span>
+                </div>
+                {!wasAutoResolved && (
+                  <button onClick={onToggleResolve} className="btn-secondary font-body font-bold text-xs rounded-md px-2.5 py-1 flex items-center gap-1.5">
+                    <Undo2 size={12} />
+                    إلغاء التأشير
+                  </button>
+                )}
               </div>
-              {!wasAutoResolved && (
-                <button onClick={onToggleResolve} className="btn-secondary font-body font-bold text-xs rounded-md px-2.5 py-1 flex items-center gap-1.5">
-                  <Undo2 size={12} />
-                  إلغاء التأشير
-                </button>
+
+              {/* Note editor for manually-resolved refs */}
+              {!wasAutoResolved && onUpdateRefNote && (
+                <RefNoteEditor
+                  initialNote={r.manualNote || ''}
+                  onSave={onUpdateRefNote}
+                />
               )}
             </div>
           )}
