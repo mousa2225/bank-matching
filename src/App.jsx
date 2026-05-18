@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import {
   CheckCircle2, Users, Sparkles, Copy, RotateCcw, ChevronDown, ChevronUp,
   Plus, X, AlertCircle, Equal, BookOpen, ScrollText,
@@ -885,7 +885,7 @@ const AuthScreen = ({ onAuthSuccess }) => {
 };
 
 // ===================== SAVED RECONCILIATIONS BAR =====================
-const SavedReconciliationsBar = ({ user, currentId, currentName, savedList, onLoad, onNew, onRename, onDelete, onSignOut, syncStatus }) => {
+const SavedReconciliationsBar = ({ user, currentId, currentName, savedList, onLoad, onNew, onRename, onDelete, onSignOut, onRefreshList, syncStatus }) => {
   const [showList, setShowList] = useState(false);
   const [renamingId, setRenamingId] = useState(null);
   const [newName, setNewName] = useState('');
@@ -971,7 +971,11 @@ const SavedReconciliationsBar = ({ user, currentId, currentName, savedList, onLo
 
           <div className="relative">
             <button
-              onClick={() => setShowList(!showList)}
+              onClick={() => {
+                const newState = !showList;
+                setShowList(newState);
+                if (newState && onRefreshList) onRefreshList();
+              }}
               className="btn-secondary font-body font-bold text-xs rounded-md px-2.5 py-1.5 flex items-center gap-1.5"
             >
               <FolderOpen size={12} />
@@ -1147,25 +1151,25 @@ export default function App() {
           name: currentReconciliationName || 'بدون اسم',
           bankText,
           internalText,
-          manuallyResolvedRefs: manuallyResolvedRefs, // now an object { ref: { note } }
+          manuallyResolvedRefs: manuallyResolvedRefs,
           resolvedCustomers,
           correctDist,
           hasRun,
           updatedAt: serverTimestamp()
         }, { merge: true });
         setSyncStatus('synced');
-        // Refresh list silently
-        loadSavedList();
+        // Note: removed loadSavedList() here — was causing UI lag.
+        // List refreshes only when user opens the dropdown or creates/deletes.
         setTimeout(() => setSyncStatus(null), 1500);
       } catch (err) {
         console.error('Save error:', err);
         setSyncStatus('error');
         setTimeout(() => setSyncStatus(null), 3000);
       }
-    }, 800);
+    }, 1500); // Increased from 800ms to 1500ms for less aggressive saving
 
     return () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); };
-  }, [bankText, internalText, manuallyResolvedRefs, resolvedCustomers, correctDist, hasRun, currentReconciliationName, currentReconciliationId, user]);
+  }, [bankText, internalText, manuallyResolvedRefs, resolvedCustomers, correctDist, hasRun, currentReconciliationName, currentReconciliationId, user?.uid]);
 
   const handleResetState = () => {
     setBankText(''); setInternalText('');
@@ -1264,10 +1268,14 @@ export default function App() {
     }
   };
 
-  const showToast = (msg) => {
+  const showToast = useCallback((msg) => {
     setToast(msg);
     setTimeout(() => setToast(null), 1800);
-  };
+  }, []);
+
+  // ===== Memoized parsing for live preview (avoids re-parsing on every render) =====
+  const parsedBankPreview = useMemo(() => parseBank(bankText), [bankText]);
+  const parsedInternalPreview = useMemo(() => parseInternal(internalText), [internalText]);
 
   const results = useMemo(
     () => reconcile(bankEntries, internalEntries, manuallyResolvedRefs, resolvedCustomers),
@@ -1439,7 +1447,7 @@ export default function App() {
     showToast('✓ تم حفظ الملاحظة');
   };
 
-  const resolveCustomer = (customer, action, note = '', ref = '') => {
+  const resolveCustomer = useCallback((customer, action, note = '', ref = '') => {
     setResolvedCustomers(prev => ({
       ...prev,
       [customer.id]: {
@@ -1454,23 +1462,23 @@ export default function App() {
                 action === 'refund' ? '✓ تم إضافة العميل لقائمة الاسترداد' :
                 '✓ تمت مطابقة العميل';
     showToast(msg);
-  };
+  }, [showToast]);
 
-  const unresolveCustomer = (customerId) => {
+  const unresolveCustomer = useCallback((customerId) => {
     setResolvedCustomers(prev => {
       const next = { ...prev };
       delete next[customerId];
       return next;
     });
     showToast('تم التراجع');
-  };
+  }, [showToast]);
 
-  const scrollToRef = (ref) => {
+  const scrollToRef = useCallback((ref) => {
     const el = refRowRefs.current[ref];
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  };
+  }, []);
 
   // ===== Conditional renders (AFTER all hooks) =====
   if (authLoading) {
@@ -1506,6 +1514,7 @@ export default function App() {
         onRename={handleRenameReconciliation}
         onDelete={handleDeleteReconciliation}
         onSignOut={handleSignOut}
+        onRefreshList={loadSavedList}
         syncStatus={syncStatus}
       />
 
@@ -1611,7 +1620,7 @@ export default function App() {
                       </div>
                       <h3 className="font-display text-lg font-bold" style={{ color: '#0F3D2E' }}>الكشف البنكي</h3>
                     </div>
-                    <span className="font-mono text-xs opacity-50">{parseBank(bankText).length} حركة</span>
+                    <span className="font-mono text-xs opacity-50">{parsedBankPreview.length} حركة</span>
                   </div>
 
                   <div className="space-y-1 mb-2">
@@ -1634,7 +1643,7 @@ export default function App() {
                     style={{ textAlign: 'left', lineHeight: '1.6' }}
                   />
 
-                  <ParsedPreview entries={parseBank(bankText)} type="bank" color="#0F3D2E" accentBg="rgba(15, 61, 46, 0.05)" />
+                  <ParsedPreview entries={parsedBankPreview} type="bank" color="#0F3D2E" accentBg="rgba(15, 61, 46, 0.05)" />
                 </div>
 
                 <div className="paper-card rounded-xl p-5 relative overflow-hidden">
@@ -1646,7 +1655,7 @@ export default function App() {
                       </div>
                       <h3 className="font-display text-lg font-bold" style={{ color: '#7c2d12' }}>السجل الداخلي</h3>
                     </div>
-                    <span className="font-mono text-xs opacity-50">{parseInternal(internalText).length} قيد</span>
+                    <span className="font-mono text-xs opacity-50">{parsedInternalPreview.length} قيد</span>
                   </div>
 
                   <div className="space-y-1 mb-2">
@@ -1671,7 +1680,7 @@ export default function App() {
                     style={{ textAlign: 'left', lineHeight: '1.6' }}
                   />
 
-                  <ParsedPreview entries={parseInternal(internalText)} type="internal" color="#7c2d12" accentBg="rgba(124, 45, 18, 0.05)" />
+                  <ParsedPreview entries={parsedInternalPreview} type="internal" color="#7c2d12" accentBg="rgba(124, 45, 18, 0.05)" />
                 </div>
               </div>
 
@@ -2485,7 +2494,7 @@ const RefNoteEditor = ({ initialNote, onSave }) => {
 };
 
 // ===================== REFERENCE ROW =====================
-const ReferenceRow = ({ r, rowRef, isOpen, onToggle, onClose, correctDist, setCorrectDist, onToggleResolve, onUpdateRefNote, onScrollUp, onResolveCustomer, onUnresolveCustomer, onShowModal, delay, showToast }) => {
+const ReferenceRow = React.memo(({ r, rowRef, isOpen, onToggle, onClose, correctDist, setCorrectDist, onToggleResolve, onUpdateRefNote, onScrollUp, onResolveCustomer, onUnresolveCustomer, onShowModal, delay, showToast }) => {
   const meta = STATUS_META[r.status];
   const isIssue = r.status !== 'matched';
   const isManualResolved = r.isManualResolved;
@@ -2716,10 +2725,10 @@ const ReferenceRow = ({ r, rowRef, isOpen, onToggle, onClose, correctDist, setCo
       )}
     </div>
   );
-};
+});
 
 // ===================== CUSTOMER ROW =====================
-const CustomerRow = ({ c, i, reference, isIssue, onResolveCustomer, onUnresolveCustomer, onShowModal, showToast }) => {
+const CustomerRow = React.memo(({ c, i, reference, isIssue, onResolveCustomer, onUnresolveCustomer, onShowModal, showToast }) => {
   const isResolved = !!c.resolution;
   const resolution = c.resolution;
   const isInQueue = resolution && (resolution.action === 'add' || resolution.action === 'refund');
@@ -2808,7 +2817,7 @@ const CustomerRow = ({ c, i, reference, isIssue, onResolveCustomer, onUnresolveC
       )}
     </div>
   );
-};
+});
 
 // ===================== DIAGNOSIS PANEL =====================
 const DiagnosisPanel = ({ r, correctDist, setCorrectDist, onToggleResolve, showToast }) => {
